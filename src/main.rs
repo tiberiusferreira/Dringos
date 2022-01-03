@@ -1,4 +1,5 @@
 use crate::washing_machine::{Event, State, WashingMachine};
+use flexi_logger::{Age, Logger};
 use frankenstein::{Api, ChatId, SendMessageParams, TelegramApi};
 use once_cell::sync::Lazy;
 use std::time::Duration;
@@ -29,9 +30,19 @@ fn seconds_to_hours_works() {
 }
 
 fn main() {
-    std::env::set_var("RUST_LOG", "info");
     dotenv::dotenv().ok();
-    pretty_env_logger::init();
+    Logger::try_with_str("info")
+        .unwrap() // Write all error, warn, and info messages
+        .log_to_file(flexi_logger::FileSpec::default())
+        .rotate(
+            // If the program runs long enough,
+            flexi_logger::Criterion::AgeOrSize(Age::Day, 10_000_000), // - create a new file every day or every 10 MB
+            flexi_logger::Naming::Timestamps, // - let the rotated files have a timestamp in their name
+            flexi_logger::Cleanup::KeepLogFiles(7), // - keep at most 7 log files
+        )
+        .start()
+        .unwrap();
+
     let token = std::env::var("API_TOKEN").expect("No API TOKEN");
     assert_ne!(*CHANNEL_ID, 0); // eager load it, so we don't get surprises later
     let api = frankenstein::Api::new(&token);
@@ -48,10 +59,8 @@ fn main() {
         }
     }
     loop {
-        println!("Checking for telegram updates");
         id_last_update_handled =
             respond_pending_telegram_msgs(&api, id_last_update_handled, &washer).unwrap();
-        println!("Checking for washer events");
         if let Some(event) = washer.check_for_events() {
             match event {
                 Event::NowAvailable {
