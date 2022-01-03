@@ -1,0 +1,30 @@
+[package]
+name = "pzem004t"
+version = "0.1.7"
+authors = ["iostapyshyn ilya.ostapyshyn@gmail.com"]
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/iostapyshyn/pzem004t"
+documentation = "https://docs.rs/pzem004t"
+edition = "2021"
+readme = "README.md"
+exclude = [".DS_Store", ".gitignore", ".gitmodules"]
+keywords = ["embedded-hal", "embedded-hal-driver"]
+description = """
+An embedded-hal driver for the PZEM004T energy monitor.
+"""
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+embedded-hal = "1.0.0-alpha.6"
+crc16 = "0.4.0"
+frankenstein = "0.9"
+serialport = "4.0.1"
+dotenv = "0.15.0"
+log = "0.4.14"
+once_cell = "1.9.0"
+pretty_env_logger = "0.4.0"
+
+[dependencies.void]
+default-features = false
+version = "1.0.2"
