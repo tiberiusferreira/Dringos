@@ -42,14 +42,18 @@ fn main() {
         )
         .start()
         .unwrap();
-
+    log_panics::init();
     let token = std::env::var("API_TOKEN").expect("No API TOKEN");
     assert_ne!(*CHANNEL_ID, 0); // eager load it, so we don't get surprises later
     let api = frankenstein::Api::new(&token);
     let washer = washing_machine::WashingMachine::new();
     std::thread::sleep(Duration::from_secs(1)); // washing machine power meter startup
     let mut id_last_update_handled = 0;
-    send_msg(&api, "Starting up!".to_string(), *CHANNEL_ID);
+    send_msg(
+        &api,
+        "A Dona Helena está operacional de novo!".to_string(),
+        *CHANNEL_ID,
+    );
     loop {
         if let Err(e) = clear_pending_updates(&api) {
             log::error!("Error clearing updates: {:#?}", e);
@@ -59,8 +63,14 @@ fn main() {
         }
     }
     loop {
-        id_last_update_handled =
-            respond_pending_telegram_msgs(&api, id_last_update_handled, &washer).unwrap();
+        match respond_pending_telegram_msgs(&api, id_last_update_handled, &washer) {
+            Ok(res) => {
+                id_last_update_handled = res;
+            }
+            Err(e) => {
+                log::error!("{:#?}", e);
+            }
+        }
         if let Some(event) = washer.check_for_events() {
             match event {
                 Event::NowAvailable {
@@ -68,7 +78,7 @@ fn main() {
                 } => {
                     let cycle_duration_s = finished_cycle_stats.cycle_start.elapsed().as_secs();
                     let energy = finished_cycle_stats.energy_consumed_joules;
-                    let energy_kwh = energy as f64 / (3.6 * 10e6);
+                    let energy_kwh = energy as f64 / (3.6 * 1e6);
                     send_msg(
                         &api,
                         format!(
