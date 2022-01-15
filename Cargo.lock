@@ -164,6 +164,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fff857943da45f546682664a79488be82e69e43c1a7a2307679ab9afb3a66d2e"
 
 [[package]]
+name = "cleangos"
+version = "0.1.0"
+dependencies = [
+ "crc16",
+ "dotenv",
+ "embedded-hal",
+ "flexi_logger",
+ "frankenstein",
+ "log 0.4.14",
+ "log-panics",
+ "once_cell",
+ "pretty_env_logger",
+ "serialport",
+]
+
+[[package]]
 name = "cloudabi"
 version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -838,23 +854,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c7342d5883fbccae1cc37a2353b09c87c9b0f3afd73f5fb9bba687a1f733b029"
 dependencies = [
  "unicode-xid",
-]
-
-[[package]]
-name = "pzem004t"
-version = "0.1.7"
-dependencies = [
- "crc16",
- "dotenv",
- "embedded-hal",
- "flexi_logger",
- "frankenstein",
- "log 0.4.14",
- "log-panics",
- "once_cell",
- "pretty_env_logger",
- "serialport",
- "void",
 ]
 
 [[package]]

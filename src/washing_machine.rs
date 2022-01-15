@@ -1,4 +1,4 @@
-use pzem004t::pzemv1::Pzem;
+use cleangos::pzemv1::Pzem;
 use std::ops::Deref;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, RwLock};
