@@ -1,8 +1,10 @@
+use crate::dryer_machine::energy_switch::EnergySwitch;
 use dringos::pzemv1::Pzem;
 use std::ops::Deref;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+
 mod energy_switch;
 const IDLE_TIME_CONSIDER_DONE_S: u64 = 30;
 
@@ -25,6 +27,24 @@ pub struct OffState {
 }
 
 impl OffState {
+    pub fn new() -> Result<OffState, std::io::Error> {
+        let usb_port = "/dev/ttyUSB0";
+        let port = serialport::new(usb_port, 9600)
+            .timeout(Duration::from_millis(2000))
+            .open()
+            .map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Cant connect to usb: {}", e.to_string()),
+                )
+            })
+            .unwrap_or_else(|e| panic!("Cannot open `{}`: {}.", usb_port, e));
+        let mut pzem = dringos::pzemv3::Pzem::new(port);
+        Ok(Self {
+            pzem,
+            switch: EnergySwitch::new()?,
+        })
+    }
     pub fn turn_on(mut self) -> Result<OnState, std::io::Error> {
         self.switch.turn_on()?;
         self.pzem.reset_consumed_energy()?;

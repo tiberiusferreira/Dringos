@@ -5,7 +5,7 @@ use once_cell::sync::Lazy;
 use std::time::Duration;
 
 mod dryer_machine;
-
+mod telegram;
 fn seconds_to_hour_format(total_seconds: u64) -> String {
     let hours = total_seconds / (60 * 60);
     let remainer_hours = total_seconds % (60 * 60);
@@ -42,22 +42,31 @@ async fn main() {
         .unwrap();
     let token = std::env::var("API_TOKEN").expect("No API TOKEN");
     // eager load it, so we don't get surprises later
-    let api = frankenstein::Api::new(&token);
-
-    // let dryer = dryer_machine::DryerMachine::new();
-    // std::thread::sleep(Duration::from_secs(1)); // washing machine power meter startup
-    let mut id_last_update_handled = 0;
-
-    // Start
-    // check if already in use
-    // loop
-
+    let mut telegram = telegram::Telegram::new(token);
+    let dryer = dryer_machine::OffState::new().unwrap();
+    loop {
+        println!("{:?}", telegram.get_updates().unwrap());
+    }
+    telegram.get_updates().unwrap();
+    telegram.get_updates().unwrap();
+    telegram.get_updates().unwrap();
+    return;
     // loop {
-    //     if let Err(e) = clear_pending_updates(&api) {
+    //     if let Err(e) = telegram.clear_pending_updates() {
     //         log::error!("Error clearing updates: {:#?}", e);
     //         std::thread::sleep(Duration::from_secs(5));
     //     } else {
     //         break;
+    //     }
+    // }
+    // loop {
+    //     match respond_pending_telegram_msgs(&api, id_last_update_handled, &washer) {
+    //         Ok(res) => {
+    //             id_last_update_handled = res;
+    //         }
+    //         Err(e) => {
+    //             log::error!("{:#?}", e);
+    //         }
     //     }
     // }
 
@@ -73,16 +82,6 @@ async fn main() {
     //     pzem.reset_consumed_energy().unwrap();
     // }
     //
-    // loop {
-    //     match respond_pending_telegram_msgs(&api, id_last_update_handled, &washer) {
-    //         Ok(res) => {
-    //             id_last_update_handled = res;
-    //         }
-    //         Err(e) => {
-    //             log::error!("{:#?}", e);
-    //         }
-    //     }
-    // }
 }
 
 fn send_msg(api: &Api, msg: String, chat_id: i64) {
@@ -149,21 +148,21 @@ fn send_msg(api: &Api, msg: String, chat_id: i64) {
 //     Ok(())
 // }
 //
-// fn clear_pending_updates(api: &Api) -> Result<(), frankenstein::Error> {
-//     let mut update_params = frankenstein::GetUpdatesParams {
-//         offset: Some(u32::MAX),
-//         limit: None,
-//         timeout: Some(10),
-//         allowed_updates: None, // None == all
-//     };
-//     let updates = api.get_updates(&update_params)?;
-//     let last_update_id = updates.result.iter().map(|u| u.update_id).max();
-//     if let Some(last_update_id) = last_update_id {
-//         update_params.offset = Some(last_update_id + 1);
-//         api.get_updates(&update_params)?;
-//     }
-//     Ok(())
-// }
+fn clear_pending_updates(api: &Api) -> Result<(), frankenstein::Error> {
+    let mut update_params = frankenstein::GetUpdatesParams {
+        offset: Some(u32::MAX),
+        limit: None,
+        timeout: Some(10),
+        allowed_updates: None, // None == all
+    };
+    let updates = api.get_updates(&update_params)?;
+    let last_update_id = updates.result.iter().map(|u| u.update_id).max();
+    if let Some(last_update_id) = last_update_id {
+        update_params.offset = Some(last_update_id + 1);
+        api.get_updates(&update_params)?;
+    }
+    Ok(())
+}
 //
 // fn respond_pending_telegram_msgs(
 //     api: &Api,
