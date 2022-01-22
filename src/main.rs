@@ -1,11 +1,17 @@
 // use crate::dryer_machine::{DryerMachine, Event, State};
+use crate::database::User;
+use crate::dryer_manager::DryerManager;
+use crate::telegram::{MsgType, UserMessage};
 use flexi_logger::{Age, Logger};
-use frankenstein::{Api, ChatId, SendMessageParams, TelegramApi};
+use frankenstein::{Api, ChatId, Error, SendMessageParams, TelegramApi};
 use once_cell::sync::Lazy;
 use std::time::Duration;
 
+mod database;
 mod dryer_machine;
+mod dryer_manager;
 mod telegram;
+
 fn seconds_to_hour_format(total_seconds: u64) -> String {
     let hours = total_seconds / (60 * 60);
     let remainer_hours = total_seconds % (60 * 60);
@@ -37,51 +43,45 @@ async fn main() {
         .start()
         .unwrap();
     log_panics::init();
-    let con = sqlx::postgres::PgPool::connect(&std::env::var("DATABASE_URL").unwrap())
-        .await
-        .unwrap();
     let token = std::env::var("API_TOKEN").expect("No API TOKEN");
-    // eager load it, so we don't get surprises later
-    let mut telegram = telegram::Telegram::new(token);
-    let dryer = dryer_machine::OffState::new().unwrap();
-    loop {
-        println!("{:?}", telegram.get_updates().unwrap());
-    }
-    telegram.get_updates().unwrap();
-    telegram.get_updates().unwrap();
-    telegram.get_updates().unwrap();
-    return;
+    let mut telegram_recv = telegram::Receiver::new(token.clone());
+    let mut telegram_sender = telegram::Sender::new(token);
+    let db = database::Database::new().await;
+    let mut dryer = dryer_manager::DryerManager::new();
+
     // loop {
-    //     if let Err(e) = telegram.clear_pending_updates() {
-    //         log::error!("Error clearing updates: {:#?}", e);
-    //         std::thread::sleep(Duration::from_secs(5));
-    //     } else {
-    //         break;
-    //     }
-    // }
-    // loop {
-    //     match respond_pending_telegram_msgs(&api, id_last_update_handled, &washer) {
-    //         Ok(res) => {
-    //             id_last_update_handled = res;
+    //     match telegram.get_updates() {
+    //         Ok(updates) => {
+    //             for u in updates {
+    //                 let maybe_user = match db.get_db_id(u.user_id as i64).await {
+    //                     Ok(maybe_user) => maybe_user,
+    //                     Err(e) => {
+    //                         log::error!("{:#?}", e);
+    //                         continue;
+    //                     }
+    //                 };
+    //                 let user = match maybe_user {
+    //                     None => {
+    //                         if let Err(e) = telegram.send_generic_msg(u.chat_id, format!("Você não está registrado. Envie essa mensagem para @TiberioFerreira com o seu id: {}", u.user_id)){
+    //                             log::error!("{:#?}", e);
+    //                         }
+    //                         continue;
+    //                     }
+    //                     Some(user) => user,
+    //                 };
+    //                 if let Err(e) =
+    //                     telegram.send_generic_msg(u.chat_id, dryer.handle_telegram_msg(u, user))
+    //                 {
+    //                     log::error!("{:#?}", e);
+    //                 }
+    //             }
     //         }
     //         Err(e) => {
     //             log::error!("{:#?}", e);
     //         }
     //     }
+    //     println!("{:?}", telegram.get_updates().unwrap());
     // }
-
-    // let usb_port = "/dev/ttyUSB0";
-    // let port = serialport::new(usb_port, 9600)
-    //     .timeout(Duration::from_millis(2000))
-    //     .open()
-    //     .unwrap_or_else(|e| panic!("Cannot open `{}`: {}.", usb_port, e));
-    // let mut pzem = dringos::pzemv3::Pzem::new(port);
-    // loop {
-    //     std::thread::sleep(Duration::from_millis(1000));
-    //     println!("{:#?}", pzem.read_data().unwrap());
-    //     pzem.reset_consumed_energy().unwrap();
-    // }
-    //
 }
 
 fn send_msg(api: &Api, msg: String, chat_id: i64) {

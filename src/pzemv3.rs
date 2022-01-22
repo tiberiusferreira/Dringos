@@ -1,4 +1,3 @@
-use crc::Algorithm;
 use log;
 use serialport::ClearBuffer;
 use std::fmt::Formatter;
