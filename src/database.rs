@@ -1,4 +1,4 @@
-use sqlx::{Error, PgPool, Pool, Postgres};
+use sqlx::PgPool;
 use std::time::Duration;
 
 pub struct Database {
@@ -29,7 +29,9 @@ impl Database {
             }
         }
     }
-    pub async fn get_db_id(&self, telegram_id: i64) -> Result<Option<User>, sqlx::Error> {
+    pub async fn get_db_id(&self, telegram_id: u64) -> Result<Option<User>, sqlx::Error> {
+        let telegram_id =
+            i64::try_from(telegram_id).expect("Error converting telegram id from u64 to i64");
         sqlx::query_as!(
             User,
             "select * from coffeezera_users where telegram_id=$1",

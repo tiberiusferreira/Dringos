@@ -1,11 +1,6 @@
-// use crate::dryer_machine::{DryerMachine, Event, State};
-use crate::database::User;
-use crate::dryer_manager::DryerManager;
-use crate::telegram::{MsgType, UserMessage};
+use crate::telegram::{MsgType, OutgoingMessage};
 use flexi_logger::{Age, Logger};
-use frankenstein::{Api, ChatId, Error, SendMessageParams, TelegramApi};
-use once_cell::sync::Lazy;
-use std::time::Duration;
+use std::sync::mpsc::TryRecvError;
 
 mod database;
 mod dryer_machine;
@@ -44,150 +39,52 @@ async fn main() {
         .unwrap();
     log_panics::init();
     let token = std::env::var("API_TOKEN").expect("No API TOKEN");
-    let mut telegram_recv = telegram::Receiver::new(token.clone());
-    let mut telegram_sender = telegram::Sender::new(token);
-    let db = database::Database::new().await;
+    let telegram_recv = telegram::Receiver::new(token.clone());
+    let telegram_sender = telegram::Sender::new(token).start_sender_background_thread();
+    let database = database::Database::new().await;
     let mut dryer = dryer_manager::DryerManager::new();
+    let update_recv = telegram_recv.start_listening_update_in_background_thread();
 
-    // loop {
-    //     match telegram.get_updates() {
-    //         Ok(updates) => {
-    //             for u in updates {
-    //                 let maybe_user = match db.get_db_id(u.user_id as i64).await {
-    //                     Ok(maybe_user) => maybe_user,
-    //                     Err(e) => {
-    //                         log::error!("{:#?}", e);
-    //                         continue;
-    //                     }
-    //                 };
-    //                 let user = match maybe_user {
-    //                     None => {
-    //                         if let Err(e) = telegram.send_generic_msg(u.chat_id, format!("Você não está registrado. Envie essa mensagem para @TiberioFerreira com o seu id: {}", u.user_id)){
-    //                             log::error!("{:#?}", e);
-    //                         }
-    //                         continue;
-    //                     }
-    //                     Some(user) => user,
-    //                 };
-    //                 if let Err(e) =
-    //                     telegram.send_generic_msg(u.chat_id, dryer.handle_telegram_msg(u, user))
-    //                 {
-    //                     log::error!("{:#?}", e);
-    //                 }
-    //             }
-    //         }
-    //         Err(e) => {
-    //             log::error!("{:#?}", e);
-    //         }
-    //     }
-    //     println!("{:?}", telegram.get_updates().unwrap());
-    // }
-}
+    loop {
+        match update_recv.try_recv() {
+            Ok(user_message) => {
+                let response = match database.get_db_id(user_message.user_id).await {
+                    Ok(maybe_user) => match maybe_user {
+                        None => {
+                            OutgoingMessage {
+                                chat_id: user_message.chat_id,
+                                text: format!("Você não está registrado, mande essa mensagem para o @TiberioFerreira com o seu id: {}", user_message.user_id),
+                                send_buttons: true,
+                            }
 
-fn send_msg(api: &Api, msg: String, chat_id: i64) {
-    if let Err(e) = api.send_message(&SendMessageParams {
-        chat_id: ChatId::Integer(chat_id),
-        text: msg,
-        parse_mode: None,
-        entities: None,
-        disable_web_page_preview: None,
-        disable_notification: None,
-        protect_content: None,
-        reply_to_message_id: None,
-        allow_sending_without_reply: None,
-        reply_markup: None,
-    }) {
-        log::error!("{:#?}", e);
+                        }
+                        Some(user) => {
+                            let response = dryer.handle_telegram_msg(user_message.clone(), user);
+                            OutgoingMessage{
+                                chat_id: user_message.chat_id,
+                                text: response,
+                                send_buttons: true
+                            }
+                        },
+                    },
+                    Err(e) => {
+                        log::error!("{:#?}", e);
+                        OutgoingMessage {
+                            chat_id: user_message.chat_id,
+                            text: "Problema na rede interna da casa, fale com @TiberioFerreira".to_string(),
+                            send_buttons: true,
+                        }
+
+                    }
+                };
+                if let Err(e) = telegram_sender.try_send(response) {
+                    log::error!("{:#?}", e);
+                }
+            }
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                panic!("Telegram thread panicked!")
+            }
+        }
     }
 }
-
-//
-// fn handle_single_update(
-//     api: &Api,
-//     update: frankenstein::Update,
-//     washer: &DryerMachine,
-// ) -> Result<(), frankenstein::Error> {
-//     if let Some(msg) = update.message {
-//         let chat_id = msg.chat.id;
-//         let state = washer.get_state();
-//         let outgoing_msg = match state {
-//             State::Available => "Disponível".to_string(),
-//             State::InUse(counters) => {
-//                 format!(
-//                     "Em uso há {}. Potência atual: {} W",
-//                     seconds_to_hour_format(counters.cycle_start.elapsed().as_secs()),
-//                     counters.last_power_measurement
-//                 )
-//             }
-//             State::SoakingOrAvailable { counters, since } => {
-//                 format!(
-//                     "Em uso há {}. Potência atual: {} W. De molho ou terminada há {}",
-//                     seconds_to_hour_format(counters.cycle_start.elapsed().as_secs()),
-//                     counters.last_power_measurement,
-//                     seconds_to_hour_format(since.elapsed().as_secs()),
-//                 )
-//             }
-//         };
-//         if let Some(_sender_user) = msg.from {
-//             println!("Chat id = {}", chat_id);
-//             api.send_message(&SendMessageParams {
-//                 chat_id: ChatId::Integer(chat_id),
-//                 text: outgoing_msg,
-//                 parse_mode: None,
-//                 entities: None,
-//                 disable_web_page_preview: None,
-//                 disable_notification: None,
-//                 protect_content: None,
-//                 reply_to_message_id: None,
-//                 allow_sending_without_reply: None,
-//                 reply_markup: None,
-//             })
-//             .unwrap();
-//         }
-//     }
-//     Ok(())
-// }
-//
-fn clear_pending_updates(api: &Api) -> Result<(), frankenstein::Error> {
-    let mut update_params = frankenstein::GetUpdatesParams {
-        offset: Some(u32::MAX),
-        limit: None,
-        timeout: Some(10),
-        allowed_updates: None, // None == all
-    };
-    let updates = api.get_updates(&update_params)?;
-    let last_update_id = updates.result.iter().map(|u| u.update_id).max();
-    if let Some(last_update_id) = last_update_id {
-        update_params.offset = Some(last_update_id + 1);
-        api.get_updates(&update_params)?;
-    }
-    Ok(())
-}
-//
-// fn respond_pending_telegram_msgs(
-//     api: &Api,
-//     update_id_offset: u32,
-//     washer: &DryerMachine,
-// ) -> Result<u32, frankenstein::Error> {
-//     let update_params = frankenstein::GetUpdatesParams {
-//         offset: Some(update_id_offset),
-//         limit: None,
-//         timeout: Some(10),
-//         allowed_updates: Some(vec!["message".to_string()]),
-//     };
-//     let result = api.get_updates(&update_params)?;
-//     if result.result.is_empty() {
-//         Ok(update_id_offset)
-//     } else {
-//         let latest_update_id = result
-//             .result
-//             .iter()
-//             .map(|u| u.update_id)
-//             .max()
-//             .unwrap_or(update_id_offset);
-//         for u in result.result {
-//             handle_single_update(api, u, washer)?;
-//         }
-//         Ok(latest_update_id + 1)
-//     }
-// }

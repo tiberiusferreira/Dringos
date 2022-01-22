@@ -1,8 +1,4 @@
-use frankenstein::{
-    Api, CallbackQuery, ChatId, Error, InlineKeyboardButton, InlineKeyboardMarkup, Message,
-    TelegramApi, User,
-};
-use std::sync::mpsc::RecvError;
+use frankenstein::{Api, ChatId, InlineKeyboardButton, InlineKeyboardMarkup, TelegramApi};
 use std::time::Duration;
 
 const TURN_ON: &'static str = "Turn On";
@@ -34,9 +30,9 @@ pub struct Sender {
 
 #[derive(Debug, Clone)]
 pub struct OutgoingMessage {
-    chat_id: i64,
-    text: String,
-    send_buttons: bool,
+    pub chat_id: i64,
+    pub text: String,
+    pub send_buttons: bool,
 }
 
 impl Sender {
@@ -123,7 +119,9 @@ impl Receiver {
         }
     }
 
-    pub fn start_listening_update_in_background_thread(mut self) {
+    pub fn start_listening_update_in_background_thread(
+        mut self,
+    ) -> std::sync::mpsc::Receiver<UserMessage> {
         let (sender, receiver) = std::sync::mpsc::sync_channel::<UserMessage>(50);
         std::thread::Builder::new()
             .name("TelegramUpdateReceiver".to_string())
@@ -144,10 +142,11 @@ impl Receiver {
                 }
             })
             .expect("Couldn't start Telegram Receiver Thread");
+        receiver
     }
 
     fn get_updates(&mut self) -> Result<Vec<UserMessage>, frankenstein::Error> {
-        let mut update_params = frankenstein::GetUpdatesParams {
+        let update_params = frankenstein::GetUpdatesParams {
             offset: Some(self.id_last_update_handled),
             limit: None,
             timeout: Some(10),

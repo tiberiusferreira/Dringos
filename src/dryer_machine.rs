@@ -1,12 +1,7 @@
 use crate::dryer_machine::energy_switch::EnergySwitch;
-use dringos::pzemv1::Pzem;
-use std::ops::Deref;
-use std::sync::mpsc::{Receiver, TryRecvError};
-use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 mod energy_switch;
-const IDLE_TIME_CONSIDER_DONE_S: u64 = 30;
 
 #[derive(Debug)]
 pub struct OffState {
@@ -27,20 +22,26 @@ impl OffState {
                 )
             })
             .unwrap_or_else(|e| panic!("Cannot open `{}`: {}.", usb_port, e));
-        let mut pzem = dringos::pzemv3::Pzem::new(port);
-        Self {
-            pzem,
-            switch: EnergySwitch::new(),
-        }
+        let pzem = dringos::pzemv3::Pzem::new(port);
+        let mut switch = EnergySwitch::new();
+        switch
+            .turn_off()
+            .expect("Couldn't turn switch off on startup");
+        Self { pzem, switch }
     }
-    pub fn turn_on(mut self) -> Result<OnState, std::io::Error> {
-        self.switch.turn_on()?;
-        self.pzem.reset_consumed_energy()?;
-        Ok(OnState {
-            pzem: self.pzem,
-            switch: self.switch,
-            energy_wh: 0,
-        })
+    pub fn turn_on(mut self) -> Result<OnState, (Self, std::io::Error)> {
+        // if we failed to turn it on, try to turn it off again
+        if let Err(e) = self.switch.turn_on() {
+            let _ = self.switch.turn_off();
+            return Err((self, e));
+        }
+        return match self.pzem.reset_consumed_energy() {
+            Ok(_) => Ok(OnState {
+                pzem: self.pzem,
+                switch: self.switch,
+            }),
+            Err(e) => Err((self, e)),
+        };
     }
 }
 
@@ -66,5 +67,4 @@ impl OnState {
 pub struct OnState {
     pzem: dringos::pzemv3::Pzem,
     switch: energy_switch::EnergySwitch,
-    energy_wh: u32,
 }
