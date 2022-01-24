@@ -1,6 +1,7 @@
 use crate::dryer_machine::OffState;
 use crate::MsgType;
 
+const TURN_OFF_SECONDS_ZERO_POWER_THRESHOLD: u64 = 60;
 pub enum State {
     On(OnState),
     OffState(super::dryer_machine::OffState),
@@ -12,21 +13,42 @@ impl State {
     }
 }
 
-struct User {
-    telegram_id: u64,
-    db_id: i32,
-    name: String,
-    balance_reais: f64,
+#[derive(Debug, Clone)]
+pub struct User {
+    pub telegram_id: u64,
+    pub chat_id: i64,
+    pub db_id: i32,
+    pub name: String,
+    pub balance_reais: f64,
 }
 
 pub struct OnState {
-    drier: super::dryer_machine::OnState,
-    start_time: std::time::Instant,
-    user: User,
+    drier_on_state: super::dryer_machine::OnState,
+    cycle_stats: CycleStats,
+    start_time_zero_power: Option<std::time::Instant>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CycleStats {
+    pub start_time: std::time::Instant,
+    pub total_consumed_kwh: f64,
+    pub total_consumed_reais: f64,
+    pub user: User,
 }
 
 pub struct DryerManager {
     state: Option<State>,
+}
+
+pub enum TickOutcome {
+    TurnOffAndRemoveUserOutOfMoney(CycleStats),
+    TurnedOffDueToIdleTooLong(CycleStats),
+    DiscountConsumed {
+        delta_energy_kwh: f64,
+        delta_consumed_reais: f64,
+        user: User,
+    },
+    Off,
 }
 
 impl DryerManager {
@@ -35,19 +57,93 @@ impl DryerManager {
             state: Some(State::new()),
         }
     }
-    fn get_status_message(&self) -> String {
-        return match &self.state {
-            None => "A secadora está livre!".to_string(),
-            Some(state) => match state {
-                State::On(on) => {
-                    format!(
-                        "{} está usando a secadora há: {}.",
-                        on.user.name,
-                        crate::seconds_to_hour_format(on.start_time.elapsed().as_secs())
-                    )
-                }
-                State::OffState(_) => "A secadora está livre!".to_string(),
+    fn process_on_state_tick(mut on: OnState) -> (State, TickOutcome) {
+        // check if user is out of money
+        if on.cycle_stats.user.balance_reais <= 0.01 {
+            let off = on.drier_on_state.turn_off_and_reset_energy_counter();
+            return (
+                State::OffState(off),
+                TickOutcome::TurnOffAndRemoveUserOutOfMoney(on.cycle_stats),
+            );
+        }
+        // if we are at "zero power" and we weren't before, mark it as being now
+        if on.drier_on_state.get_current_power() < 1. && on.start_time_zero_power.is_none() {
+            on.start_time_zero_power = Some(std::time::Instant::now())
+        }
+        if let Some(zero_power_since) = &on.start_time_zero_power {
+            if TURN_OFF_SECONDS_ZERO_POWER_THRESHOLD < zero_power_since.elapsed().as_secs() {
+                // if we've been at "zero power" more time than the threshold, consider it
+                // as turned off
+                // turn off and remove user
+                let off = on.drier_on_state.turn_off_and_reset_energy_counter();
+                return (
+                    State::OffState(off),
+                    TickOutcome::TurnedOffDueToIdleTooLong(on.cycle_stats),
+                );
+            }
+        }
+        let consumed_wh = on.drier_on_state.get_consumed_energy_wh();
+        let total_consumed_kwh = consumed_wh as f64 / 1000.;
+        let total_consumed_reais = 1.1 * (total_consumed_kwh);
+        let delta_energy_kwh = total_consumed_kwh - on.cycle_stats.total_consumed_kwh;
+        let delta_consumed_reais = total_consumed_reais - on.cycle_stats.total_consumed_reais;
+        assert!(
+            delta_consumed_reais >= 0.,
+            "Can't have negative consumed money"
+        );
+        assert!(
+            delta_energy_kwh >= 0.,
+            "Can't have negative consumed energy"
+        );
+        on.cycle_stats.total_consumed_kwh = total_consumed_kwh;
+        on.cycle_stats.total_consumed_reais = total_consumed_reais;
+        let user = on.cycle_stats.user.clone();
+        (
+            State::On(on),
+            TickOutcome::DiscountConsumed {
+                delta_energy_kwh,
+                delta_consumed_reais,
+                user,
             },
+        )
+    }
+    pub fn set_user_balance_reais(&mut self, balance_reais: f64) {
+        let current_state = self
+            .state
+            .as_mut()
+            .expect("State should have been initiated");
+        match current_state {
+            State::On(on) => {
+                on.cycle_stats.user.balance_reais = balance_reais;
+            }
+            State::OffState(_) => {
+                panic!("Logic bug, can't set user when off!")
+            }
+        }
+    }
+    pub fn tick(&mut self) -> TickOutcome {
+        let current_state = self.state.take().expect("State should have been initiated");
+        let (state, tick_outcome) = match current_state {
+            State::On(on_state) => Self::process_on_state_tick(on_state),
+            State::OffState(off_state) => (State::OffState(off_state), TickOutcome::Off),
+        };
+        self.state = Some(state);
+        tick_outcome
+    }
+    fn get_status_message(&self) -> String {
+        let state = self
+            .state
+            .as_ref()
+            .expect("State should have been initiated");
+        return match state {
+            State::On(on) => {
+                format!(
+                    "{} está usando a secadora há: {}.",
+                    on.cycle_stats.user.name,
+                    crate::seconds_to_hour_format(on.cycle_stats.start_time.elapsed().as_secs())
+                )
+            }
+            State::OffState(_) => "A secadora está livre!".to_string(),
         };
     }
 
@@ -55,17 +151,24 @@ impl DryerManager {
         off_state: OffState,
         user: super::telegram::UserMessage,
         db_user: super::database::User,
-    ) -> Result<OnState, (OffState, std::io::Error)> {
-        off_state.turn_on().map(|on_state| OnState {
-            drier: on_state,
-            start_time: std::time::Instant::now(),
-            user: User {
-                telegram_id: user.user_id,
-                db_id: db_user.id,
-                name: db_user.name,
-                balance_reais: db_user.dryer_balance_reais,
+    ) -> OnState {
+        let on = off_state.turn_on_and_reset_energy_counter();
+        OnState {
+            drier_on_state: on,
+            start_time_zero_power: None,
+            cycle_stats: CycleStats {
+                start_time: std::time::Instant::now(),
+                total_consumed_kwh: 0.0,
+                total_consumed_reais: 0.0,
+                user: User {
+                    telegram_id: user.user_id,
+                    chat_id: user.chat_id,
+                    db_id: db_user.id,
+                    name: db_user.name,
+                    balance_reais: db_user.dryer_balance_reais,
+                },
             },
-        })
+        }
     }
 
     pub fn handle_turn_state_change(
@@ -75,13 +178,15 @@ impl DryerManager {
     ) -> (State, String) {
         return match current {
             State::On(on) => {
-                if on.user.telegram_id == user.user_id {
+                if on.cycle_stats.user.telegram_id == user.user_id {
                     (State::On(on), format!("Você já está usando a secadora."))
                 } else {
                     let msg = format!(
                         "{} está usando a secadora há: {}",
-                        on.user.name,
-                        crate::seconds_to_hour_format(on.start_time.elapsed().as_secs())
+                        on.cycle_stats.user.name,
+                        crate::seconds_to_hour_format(
+                            on.cycle_stats.start_time.elapsed().as_secs()
+                        )
                     );
                     (State::On(on), msg)
                 }
@@ -89,19 +194,12 @@ impl DryerManager {
             State::OffState(off_state) => {
                 if db_user.account_balance <= 2. {
                     return (State::OffState(off_state), format!("Você precisa de ao menos 2 reais de saldo para ligar a secadora, você possui: R${:.2}.", db_user.account_balance));
-                }
-                match Self::turn_on_for_user(off_state, user, db_user.clone()) {
-                    Ok(on_state) => (
-                        State::On(on_state),
+                } else {
+                    let state = Self::turn_on_for_user(off_state, user, db_user.clone());
+                    (
+                        State::On(state),
                         format!("Ligada, você tem R${:.2}", db_user.dryer_balance_reais),
-                    ),
-                    Err((off_state, err)) => {
-                        log::error!("{:#?}", err);
-                        (
-                            State::OffState(off_state),
-                            format!("Erro de hardware ao ligar a secadora :(, fale com @TiberioFerreira"),
-                        )
-                    }
+                    )
                 }
             }
         };

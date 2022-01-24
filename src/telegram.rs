@@ -119,7 +119,7 @@ impl Receiver {
         }
     }
 
-    pub fn start_listening_update_in_background_thread(
+    pub fn start_listening_for_updates_in_background_thread(
         mut self,
     ) -> std::sync::mpsc::Receiver<UserMessage> {
         let (sender, receiver) = std::sync::mpsc::sync_channel::<UserMessage>(50);

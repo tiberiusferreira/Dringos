@@ -1,3 +1,4 @@
+use crate::dryer_manager::TickOutcome;
 use crate::telegram::{MsgType, OutgoingMessage};
 use flexi_logger::{Age, Logger};
 use std::sync::mpsc::TryRecvError;
@@ -43,7 +44,7 @@ async fn main() {
     let telegram_sender = telegram::Sender::new(token).start_sender_background_thread();
     let database = database::Database::new().await;
     let mut dryer = dryer_manager::DryerManager::new();
-    let update_recv = telegram_recv.start_listening_update_in_background_thread();
+    let update_recv = telegram_recv.start_listening_for_updates_in_background_thread();
 
     loop {
         match update_recv.try_recv() {
@@ -74,7 +75,6 @@ async fn main() {
                             text: "Problema na rede interna da casa, fale com @TiberioFerreira".to_string(),
                             send_buttons: true,
                         }
-
                     }
                 };
                 if let Err(e) = telegram_sender.try_send(response) {
@@ -85,6 +85,47 @@ async fn main() {
             Err(TryRecvError::Disconnected) => {
                 panic!("Telegram thread panicked!")
             }
+        }
+        let tick_outcome = dryer.tick();
+        match tick_outcome {
+            TickOutcome::TurnOffAndRemoveUserOutOfMoney(cycle_stats) => {
+                OutgoingMessage {
+                    chat_id: cycle_stats.user.chat_id,
+                    text: format!(
+                        "Ciclo terminado por falta de saldo depois de {cycle_time}. Custo: R${cost_reais:.2} referentes a {kwh:.2} kwh consumidos. Saldo remanescente de {balance:.2}.",
+                        cycle_time=seconds_to_hour_format(cycle_stats.start_time.elapsed().as_secs()),
+                        cost_reais=cycle_stats.total_consumed_reais,
+                        kwh=cycle_stats.total_consumed_kwh,
+                        balance=cycle_stats.user.balance_reais,
+                    ),
+                    send_buttons: true,
+                };
+                if let Err(e) = telegram_sender.try_send(response) {
+                    log::error!("{:#?}", e);
+                }
+            }
+            TickOutcome::TurnedOffDueToIdleTooLong(cycle_stats) => {
+                OutgoingMessage {
+                    chat_id: cycle_stats.user.chat_id,
+                    text: format!(
+                        "Ciclo terminado depois de {cycle_time}. Custo: R${cost_reais:.2} referentes a {kwh:.2} kwh consumidos. Saldo remanescente de {balance:.2}.",
+                        cycle_time=seconds_to_hour_format(cycle_stats.start_time.elapsed().as_secs()),
+                        cost_reais=cycle_stats.total_consumed_reais,
+                        kwh=cycle_stats.total_consumed_kwh,
+                        balance=cycle_stats.user.balance_reais,
+                    ),
+                    send_buttons: true,
+                };
+                if let Err(e) = telegram_sender.try_send(response) {
+                    log::error!("{:#?}", e);
+                }
+            }
+            TickOutcome::DiscountConsumed {
+                delta_energy_kwh,
+                delta_consumed_reais,
+                user,
+            } => {}
+            TickOutcome::Off => {}
         }
     }
 }

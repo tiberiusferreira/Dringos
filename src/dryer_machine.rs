@@ -29,37 +29,43 @@ impl OffState {
             .expect("Couldn't turn switch off on startup");
         Self { pzem, switch }
     }
-    pub fn turn_on(mut self) -> Result<OnState, (Self, std::io::Error)> {
+    pub fn turn_on_and_reset_energy_counter(mut self) -> OnState {
         // if we failed to turn it on, try to turn it off again
         if let Err(e) = self.switch.turn_on() {
             let _ = self.switch.turn_off();
-            return Err((self, e));
+            panic!("Error switching on dryer!\n{}", e);
         }
-        return match self.pzem.reset_consumed_energy() {
-            Ok(_) => Ok(OnState {
-                pzem: self.pzem,
-                switch: self.switch,
-            }),
-            Err(e) => Err((self, e)),
-        };
+        self.pzem
+            .reset_consumed_energy()
+            .expect("Error resetting consumed energy!");
+        OnState {
+            pzem: self.pzem,
+            switch: self.switch,
+        }
     }
 }
 
 impl OnState {
-    pub fn get_consumed_energy(&mut self) -> Result<u32, std::io::Error> {
-        let data = self.pzem.read_data()?;
-        Ok(data.energy_wh)
+    pub fn get_consumed_energy_wh(&mut self) -> u32 {
+        let data = self.pzem.read_data().expect("Error reading pzem data!");
+        data.energy_wh
     }
-    pub fn reset_consumed_energy(&mut self) -> Result<(), std::io::Error> {
-        self.pzem.reset_consumed_energy()?;
-        Ok(())
+    pub fn get_current_power(&mut self) -> f32 {
+        let data = self.pzem.read_data().expect("Error reading pzem data!");
+        data.power
     }
-    pub fn turn_off(mut self) -> Result<OffState, std::io::Error> {
-        self.switch.turn_off()?;
-        Ok(OffState {
+    pub fn reset_consumed_energy(&mut self) {
+        self.pzem
+            .reset_consumed_energy()
+            .expect("Error reseting pzem consumed energy!");
+    }
+    pub fn turn_off_and_reset_energy_counter(mut self) -> OffState {
+        self.switch.turn_off().expect("Error turning dryer off!");
+        self.reset_consumed_energy();
+        OffState {
             pzem: self.pzem,
             switch: self.switch,
-        })
+        }
     }
 }
 
