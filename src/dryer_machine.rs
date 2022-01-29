@@ -24,17 +24,12 @@ impl OffState {
             .unwrap_or_else(|e| panic!("Cannot open `{}`: {}.", usb_port, e));
         let pzem = dringos::pzemv3::Pzem::new(port);
         let mut switch = EnergySwitch::new();
-        switch
-            .turn_off()
-            .expect("Couldn't turn switch off on startup");
+        switch.turn_off();
         Self { pzem, switch }
     }
     pub fn turn_on_and_reset_energy_counter(mut self) -> OnState {
         // if we failed to turn it on, try to turn it off again
-        if let Err(e) = self.switch.turn_on() {
-            let _ = self.switch.turn_off();
-            panic!("Error switching on dryer!\n{}", e);
-        }
+        self.switch.turn_on();
         self.pzem
             .reset_consumed_energy()
             .expect("Error resetting consumed energy!");
@@ -60,7 +55,7 @@ impl OnState {
             .expect("Error reseting pzem consumed energy!");
     }
     pub fn turn_off_and_reset_energy_counter(mut self) -> OffState {
-        self.switch.turn_off().expect("Error turning dryer off!");
+        self.switch.turn_off();
         self.reset_consumed_energy();
         OffState {
             pzem: self.pzem,

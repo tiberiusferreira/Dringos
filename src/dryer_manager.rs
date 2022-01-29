@@ -17,7 +17,6 @@ impl State {
 pub struct User {
     pub telegram_id: u64,
     pub chat_id: i64,
-    pub db_id: i32,
     pub name: String,
     pub balance_reais: f64,
 }
@@ -56,6 +55,14 @@ impl DryerManager {
         Self {
             state: Some(State::new()),
         }
+    }
+    pub fn emergency_turn_off(&mut self) {
+        let state = self.state.take().expect("State should have been initiated");
+        let new_state = match state {
+            State::On(on) => State::OffState(on.drier_on_state.turn_off_and_reset_energy_counter()),
+            State::OffState(off) => State::OffState(off),
+        };
+        self.state = Some(new_state);
     }
     fn process_on_state_tick(mut on: OnState) -> (State, TickOutcome) {
         // check if user is out of money
@@ -163,9 +170,8 @@ impl DryerManager {
                 user: User {
                     telegram_id: user.user_id,
                     chat_id: user.chat_id,
-                    db_id: db_user.id,
                     name: db_user.name,
-                    balance_reais: db_user.dryer_balance_reais,
+                    balance_reais: db_user.balance_reais,
                 },
             },
         }
@@ -192,13 +198,13 @@ impl DryerManager {
                 }
             }
             State::OffState(off_state) => {
-                if db_user.account_balance <= 2. {
-                    return (State::OffState(off_state), format!("Você precisa de ao menos 2 reais de saldo para ligar a secadora, você possui: R${:.2}.", db_user.account_balance));
+                if db_user.balance_reais <= 2. {
+                    return (State::OffState(off_state), format!("Você precisa de ao menos 2 reais de saldo para ligar a secadora, você possui: R${:.2}.", db_user.balance_reais));
                 } else {
                     let state = Self::turn_on_for_user(off_state, user, db_user.clone());
                     (
                         State::On(state),
-                        format!("Ligada, você tem R${:.2}", db_user.dryer_balance_reais),
+                        format!("Ligada, você tem R${:.2}", db_user.balance_reais),
                     )
                 }
             }

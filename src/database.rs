@@ -1,3 +1,4 @@
+use sqlx::postgres::PgQueryResult;
 use sqlx::PgPool;
 use std::time::Duration;
 
@@ -7,12 +8,9 @@ pub struct Database {
 
 #[derive(Debug, Clone)]
 pub struct User {
-    pub id: i32,
-    pub name: String,
     pub telegram_id: i64,
-    pub account_balance: f64,
-    pub is_resident: bool,
-    pub dryer_balance_reais: f64,
+    pub name: String,
+    pub balance_reais: f64,
 }
 
 impl Database {
@@ -34,10 +32,31 @@ impl Database {
             i64::try_from(telegram_id).expect("Error converting telegram id from u64 to i64");
         sqlx::query_as!(
             User,
-            "select * from coffeezera_users where telegram_id=$1",
+            "select * from Users where telegram_id=$1",
             telegram_id
         )
         .fetch_optional(&self.con)
         .await
+    }
+    pub async fn update_user_balance(
+        &self,
+        telegram_id: u64,
+        new_balance: f64,
+    ) -> Result<(), sqlx::Error> {
+        let telegram_id =
+            i64::try_from(telegram_id).expect("Error converting telegram id from u64 to i64");
+        let res: PgQueryResult = sqlx::query!(
+            "update Users set balance_reais=$1 where telegram_id=$2;",
+            new_balance,
+            telegram_id
+        )
+        .execute(&self.con)
+        .await?;
+        assert_eq!(
+            res.rows_affected(),
+            1,
+            "Updating balance affected more than one row!"
+        );
+        Ok(())
     }
 }

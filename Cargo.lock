@@ -406,6 +406,7 @@ dependencies = [
  "embedded-hal",
  "flexi_logger",
  "frankenstein",
+ "gpio-cdev",
  "log 0.4.14",
  "log-panics",
  "once_cell",
@@ -609,6 +610,17 @@ name = "glob"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b919933a397b79c37e33b77bb2aa3dc8eb6e165ad809e58ff75bc7db2e34574"
+
+[[package]]
+name = "gpio-cdev"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da59d440ef8c26208b3960ed58b71b896db7dfd6bb138622bba733b66d978c3a"
+dependencies = [
+ "bitflags",
+ "libc",
+ "nix 0.14.1",
+]
 
 [[package]]
 name = "groupable"
@@ -1066,6 +1078,19 @@ dependencies = [
  "time 0.1.43",
  "typemap",
  "url 1.7.2",
+]
+
+[[package]]
+name = "nix"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c722bee1037d430d0f8e687bbdbf222f27cc6e4e68d5caf630857bb2b6dbdce"
+dependencies = [
+ "bitflags",
+ "cc",
+ "cfg-if 0.1.10",
+ "libc",
+ "void",
 ]
 
 [[package]]
@@ -1655,7 +1680,7 @@ dependencies = [
  "cfg-if 0.1.10",
  "libudev",
  "mach 0.2.3",
- "nix",
+ "nix 0.16.1",
  "regex",
  "winapi",
 ]

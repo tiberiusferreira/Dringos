@@ -1,7 +1,8 @@
 use crate::dryer_manager::TickOutcome;
 use crate::telegram::{MsgType, OutgoingMessage};
 use flexi_logger::{Age, Logger};
-use std::sync::mpsc::TryRecvError;
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::Duration;
 
 mod database;
 mod dryer_machine;
@@ -47,7 +48,7 @@ async fn main() {
     let update_recv = telegram_recv.start_listening_for_updates_in_background_thread();
 
     loop {
-        match update_recv.try_recv() {
+        match update_recv.recv_timeout(Duration::from_secs(10)) {
             Ok(user_message) => {
                 let response = match database.get_db_id(user_message.user_id).await {
                     Ok(maybe_user) => match maybe_user {
@@ -81,15 +82,21 @@ async fn main() {
                     log::error!("{:#?}", e);
                 }
             }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                panic!("Telegram thread panicked!")
+            Err(e) => {
+                match e {
+                    RecvTimeoutError::Timeout => {
+                        // it's ok
+                    }
+                    RecvTimeoutError::Disconnected => {
+                        panic!("Telegram thread panicked!")
+                    }
+                }
             }
         }
         let tick_outcome = dryer.tick();
         match tick_outcome {
             TickOutcome::TurnOffAndRemoveUserOutOfMoney(cycle_stats) => {
-                OutgoingMessage {
+                let response = OutgoingMessage {
                     chat_id: cycle_stats.user.chat_id,
                     text: format!(
                         "Ciclo terminado por falta de saldo depois de {cycle_time}. Custo: R${cost_reais:.2} referentes a {kwh:.2} kwh consumidos. Saldo remanescente de {balance:.2}.",
@@ -105,7 +112,7 @@ async fn main() {
                 }
             }
             TickOutcome::TurnedOffDueToIdleTooLong(cycle_stats) => {
-                OutgoingMessage {
+                let response = OutgoingMessage {
                     chat_id: cycle_stats.user.chat_id,
                     text: format!(
                         "Ciclo terminado depois de {cycle_time}. Custo: R${cost_reais:.2} referentes a {kwh:.2} kwh consumidos. Saldo remanescente de {balance:.2}.",
@@ -121,10 +128,44 @@ async fn main() {
                 }
             }
             TickOutcome::DiscountConsumed {
-                delta_energy_kwh,
+                delta_energy_kwh: _delta_energy_kwh,
                 delta_consumed_reais,
                 user,
-            } => {}
+            } => {
+                let fresh_db_user = database.get_db_id(user.telegram_id).await;
+
+                match fresh_db_user {
+                    Ok(fresh_db_user) => {
+                        let fresh_db_user =
+                            fresh_db_user.expect("DB user should exist if has cycle started");
+                        let new_dryer_balance_reais =
+                            fresh_db_user.balance_reais - delta_consumed_reais;
+                        let new_balance = new_dryer_balance_reais.max(0.);
+                        if let Err(e) = database
+                            .update_user_balance(user.telegram_id, new_balance)
+                            .await
+                        {
+                            dryer.emergency_turn_off();
+                            panic!("DB error updating user balance!{:#?}", e);
+                        }
+                        dryer.set_user_balance_reais(new_balance);
+                    }
+                    Err(e) => {
+                        log::error!("{:#?}", e);
+                        dryer.emergency_turn_off();
+                        let response = OutgoingMessage {
+                            chat_id: user.chat_id,
+                            text: format!(
+                                "Ciclo terminado a força por problema na rede interna da casa. Sem a rede interna não é possível atualizar o saldo durante o ciclo",
+                            ),
+                            send_buttons: true,
+                        };
+                        if let Err(e) = telegram_sender.try_send(response) {
+                            log::error!("{:#?}", e);
+                        }
+                    }
+                }
+            }
             TickOutcome::Off => {}
         }
     }

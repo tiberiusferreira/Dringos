@@ -18,4 +18,5 @@ flexi_logger = "0.22.0"
 pretty_env_logger = "0.4.0"
 crc = "2.0"
 sqlx = {version = "0.5.10", features=["runtime-tokio-native-tls", "postgres", "macros"]}
+gpio-cdev = "0.4"
 log-panics = "2.0.0"
