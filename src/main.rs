@@ -54,24 +54,20 @@ async fn main() {
                     Ok(maybe_user) => match maybe_user {
                         None => {
                             OutgoingMessage {
+                                update_message_with_id: None,
                                 chat_id: user_message.chat_id,
                                 text: format!("Você não está registrado, mande essa mensagem para o @TiberioFerreira com o seu id: {}", user_message.user_id),
                                 send_buttons: true,
                             }
-
                         }
                         Some(user) => {
-                            let response = dryer.handle_telegram_msg(user_message.clone(), user);
-                            OutgoingMessage{
-                                chat_id: user_message.chat_id,
-                                text: response,
-                                send_buttons: true
-                            }
+                            dryer.handle_telegram_msg(user_message.clone(), user)
                         },
                     },
                     Err(e) => {
                         log::error!("{:#?}", e);
                         OutgoingMessage {
+                            update_message_with_id: None,
                             chat_id: user_message.chat_id,
                             text: "Problema na rede interna da casa, fale com @TiberioFerreira".to_string(),
                             send_buttons: true,
@@ -97,6 +93,7 @@ async fn main() {
         match tick_outcome {
             TickOutcome::TurnOffAndRemoveUserOutOfMoney(cycle_stats) => {
                 let response = OutgoingMessage {
+                    update_message_with_id: None,
                     chat_id: cycle_stats.user.chat_id,
                     text: format!(
                         "Ciclo terminado por falta de saldo depois de {cycle_time}. Custo: R${cost_reais:.2} referentes a {kwh:.2} kwh consumidos. Saldo remanescente de {balance:.2}.",
@@ -113,6 +110,7 @@ async fn main() {
             }
             TickOutcome::TurnedOffDueToIdleTooLong(cycle_stats) => {
                 let response = OutgoingMessage {
+                    update_message_with_id: None,
                     chat_id: cycle_stats.user.chat_id,
                     text: format!(
                         "Ciclo terminado depois de {cycle_time}. Custo: R${cost_reais:.2} referentes a {kwh:.2} kwh consumidos. Saldo remanescente de {balance:.2}.",
@@ -154,6 +152,7 @@ async fn main() {
                         log::error!("{:#?}", e);
                         dryer.emergency_turn_off();
                         let response = OutgoingMessage {
+                            update_message_with_id: None,
                             chat_id: user.chat_id,
                             text: format!(
                                 "Ciclo terminado a força por problema na rede interna da casa. Sem a rede interna não é possível atualizar o saldo durante o ciclo",

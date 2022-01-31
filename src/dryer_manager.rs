@@ -1,6 +1,7 @@
 use crate::dryer_machine::OffState;
-use crate::MsgType;
+use crate::{MsgType, OutgoingMessage};
 
+const COST_REAIS_KWH: f64 = 1.1;
 const TURN_OFF_SECONDS_ZERO_POWER_THRESHOLD: u64 = 60;
 pub enum State {
     On(OnState),
@@ -74,11 +75,17 @@ impl DryerManager {
             );
         }
         // if we are at "zero power" and we weren't before, mark it as being now
-        if on.drier_on_state.get_current_power() < 1. && on.start_time_zero_power.is_none() {
+        let current_power = on.drier_on_state.get_current_power();
+        if current_power <= 1. && on.start_time_zero_power.is_none() {
             on.start_time_zero_power = Some(std::time::Instant::now())
         }
+        // if we are consuming power, make sure to remove the `start_time_zero_power`
+        if current_power > 1. {
+            on.start_time_zero_power = None;
+        }
+
         if let Some(zero_power_since) = &on.start_time_zero_power {
-            if TURN_OFF_SECONDS_ZERO_POWER_THRESHOLD < zero_power_since.elapsed().as_secs() {
+            if TURN_OFF_SECONDS_ZERO_POWER_THRESHOLD <= zero_power_since.elapsed().as_secs() {
                 // if we've been at "zero power" more time than the threshold, consider it
                 // as turned off
                 // turn off and remove user
@@ -91,7 +98,7 @@ impl DryerManager {
         }
         let consumed_wh = on.drier_on_state.get_consumed_energy_wh();
         let total_consumed_kwh = consumed_wh as f64 / 1000.;
-        let total_consumed_reais = 1.1 * (total_consumed_kwh);
+        let total_consumed_reais = COST_REAIS_KWH * (total_consumed_kwh);
         let delta_energy_kwh = total_consumed_kwh - on.cycle_stats.total_consumed_kwh;
         let delta_consumed_reais = total_consumed_reais - on.cycle_stats.total_consumed_reais;
         assert!(
@@ -137,18 +144,31 @@ impl DryerManager {
         self.state = Some(state);
         tick_outcome
     }
-    fn get_status_message(&self) -> String {
+    fn get_status_message(&self, telegram_id: u64) -> String {
         let state = self
             .state
             .as_ref()
             .expect("State should have been initiated");
         return match state {
             State::On(on) => {
-                format!(
-                    "{} está usando a secadora há: {}.",
-                    on.cycle_stats.user.name,
-                    crate::seconds_to_hour_format(on.cycle_stats.start_time.elapsed().as_secs())
-                )
+                if on.cycle_stats.user.telegram_id == telegram_id {
+                    let cycle_stats = &on.cycle_stats;
+                    format!(
+                        "Secando há {cycle_time}. Custo até o momento: R${cost_reais:.2} referentes a {kwh:.2} kwh consumidos. Saldo remanescente de {balance:.2}.",
+                        cycle_time= crate::seconds_to_hour_format(cycle_stats.start_time.elapsed().as_secs()),
+                        cost_reais=cycle_stats.total_consumed_reais,
+                        kwh=cycle_stats.total_consumed_kwh,
+                        balance=cycle_stats.user.balance_reais,
+                    )
+                } else {
+                    format!(
+                        "{} está usando a secadora há: {}.",
+                        on.cycle_stats.user.name,
+                        crate::seconds_to_hour_format(
+                            on.cycle_stats.start_time.elapsed().as_secs()
+                        )
+                    )
+                }
             }
             State::OffState(_) => "A secadora está livre!".to_string(),
         };
@@ -229,11 +249,26 @@ impl DryerManager {
         &mut self,
         user_msg: super::telegram::UserMessage,
         db_user: super::database::User,
-    ) -> String {
+    ) -> OutgoingMessage {
         match user_msg.update {
-            MsgType::GenericMsg => self.get_status_message(),
-            MsgType::TurnOn => self.handle_turn_on_message(user_msg, db_user),
-            MsgType::Update => self.get_status_message(),
+            MsgType::GenericMsg => OutgoingMessage {
+                update_message_with_id: None,
+                chat_id: user_msg.chat_id,
+                text: self.get_status_message(user_msg.user_id),
+                send_buttons: true,
+            },
+            MsgType::TurnOn => OutgoingMessage {
+                update_message_with_id: user_msg.message_id,
+                chat_id: user_msg.chat_id,
+                text: self.handle_turn_on_message(user_msg, db_user),
+                send_buttons: true,
+            },
+            MsgType::Update => OutgoingMessage {
+                update_message_with_id: user_msg.message_id,
+                chat_id: user_msg.chat_id,
+                text: self.get_status_message(user_msg.user_id),
+                send_buttons: true,
+            },
         }
     }
 }

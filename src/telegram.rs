@@ -12,6 +12,9 @@ pub struct Receiver {
 
 #[derive(Debug, Clone)]
 pub struct UserMessage {
+    // Only some when it comes from a callback query and thus can be used to update
+    // the message with new data
+    pub message_id: Option<i32>,
     pub user_id: u64,
     pub chat_id: i64,
     pub update: MsgType,
@@ -30,6 +33,7 @@ pub struct Sender {
 
 #[derive(Debug, Clone)]
 pub struct OutgoingMessage {
+    pub update_message_with_id: Option<i32>,
     pub chat_id: i64,
     pub text: String,
     pub send_buttons: bool,
@@ -58,54 +62,71 @@ impl Sender {
         outgoing_msg: OutgoingMessage,
     ) -> Result<(), frankenstein::Error> {
         let OutgoingMessage {
+            update_message_with_id: message_id,
             chat_id,
             text,
             send_buttons,
         } = outgoing_msg;
         let reply_markup = if send_buttons {
-            Some(frankenstein::ReplyMarkup::InlineKeyboardMarkup(
-                InlineKeyboardMarkup {
-                    inline_keyboard: vec![vec![
-                        InlineKeyboardButton {
-                            text: "Ligar".to_string(),
-                            url: None,
-                            login_url: None,
-                            callback_data: Some(TURN_ON.to_string()),
-                            switch_inline_query: None,
-                            switch_inline_query_current_chat: None,
-                            callback_game: None,
-                            pay: None,
-                        },
-                        InlineKeyboardButton {
-                            text: "Atualizar".to_string(),
-                            url: None,
-                            login_url: None,
-                            callback_data: Some(UPDATE.to_string()),
-                            switch_inline_query: None,
-                            switch_inline_query_current_chat: None,
-                            callback_game: None,
-                            pay: None,
-                        },
-                    ]],
-                },
-            ))
+            Some(InlineKeyboardMarkup {
+                inline_keyboard: vec![vec![
+                    InlineKeyboardButton {
+                        text: "Ligar".to_string(),
+                        url: None,
+                        login_url: None,
+                        callback_data: Some(TURN_ON.to_string()),
+                        switch_inline_query: None,
+                        switch_inline_query_current_chat: None,
+                        callback_game: None,
+                        pay: None,
+                    },
+                    InlineKeyboardButton {
+                        text: "Atualizar".to_string(),
+                        url: None,
+                        login_url: None,
+                        callback_data: Some(UPDATE.to_string()),
+                        switch_inline_query: None,
+                        switch_inline_query_current_chat: None,
+                        callback_game: None,
+                        pay: None,
+                    },
+                ]],
+            })
         } else {
             None
         };
+        match message_id {
+            None => {
+                let msg = frankenstein::SendMessageParams {
+                    chat_id: ChatId::Integer(chat_id),
+                    text,
+                    parse_mode: None,
+                    entities: None,
+                    disable_web_page_preview: None,
+                    disable_notification: None,
+                    protect_content: None,
+                    reply_to_message_id: None,
+                    allow_sending_without_reply: None,
+                    reply_markup: reply_markup
+                        .map(|r| frankenstein::ReplyMarkup::InlineKeyboardMarkup(r)),
+                };
+                self.api.send_message(&msg)?;
+            }
+            Some(message_id) => {
+                let edit_msg = frankenstein::EditMessageTextParams {
+                    chat_id: Some(ChatId::Integer(chat_id)),
+                    message_id: Some(message_id),
+                    inline_message_id: None,
+                    text,
+                    parse_mode: None,
+                    entities: None,
+                    disable_web_page_preview: None,
+                    reply_markup,
+                };
+                self.api.edit_message_text(&edit_msg)?;
+            }
+        }
 
-        let msg = frankenstein::SendMessageParams {
-            chat_id: ChatId::Integer(chat_id),
-            text,
-            parse_mode: None,
-            entities: None,
-            disable_web_page_preview: None,
-            disable_notification: None,
-            protect_content: None,
-            reply_to_message_id: None,
-            allow_sending_without_reply: None,
-            reply_markup,
-        };
-        self.api.send_message(&msg)?;
         Ok(())
     }
 }
@@ -174,6 +195,7 @@ impl Receiver {
                             None
                         }
                         Some(from) => Some(UserMessage {
+                            message_id: None,
                             user_id: from.id,
                             chat_id: msg.chat.id,
                             update: MsgType::GenericMsg,
@@ -191,6 +213,7 @@ impl Receiver {
                             _ => return None,
                         };
                         Some(UserMessage {
+                            message_id: Some(msg.message_id),
                             user_id: callback.from.id,
                             chat_id: msg.chat.id,
                             update,

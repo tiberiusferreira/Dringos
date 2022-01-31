@@ -10,7 +10,7 @@ impl EnergySwitch {
         let mut chip =
             gpio_cdev::Chip::new("/dev/gpiochip0").expect("Error initializing GPIO Chip!");
         let switch_gpio = chip
-            .get_line(16)
+            .get_line(26)
             .expect("Error initializing GPIO switch line!")
             .request(LineRequestFlags::OUTPUT, 0, "dryer-switch")
             .expect("Error initializing GPIO switch line as output!");
