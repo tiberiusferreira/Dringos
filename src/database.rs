@@ -1,4 +1,3 @@
-use sqlx::postgres::PgQueryResult;
 use sqlx::PgPool;
 use std::time::Duration;
 
@@ -41,22 +40,22 @@ impl Database {
     pub async fn update_user_balance(
         &self,
         telegram_id: u64,
-        new_balance: f64,
-    ) -> Result<(), sqlx::Error> {
+        value_to_discount_as_positive_number: f64,
+    ) -> Result<f64, sqlx::Error> {
+        assert!(
+            value_to_discount_as_positive_number >= 0.,
+            "Can't discount a positive amount"
+        );
         let telegram_id =
             i64::try_from(telegram_id).expect("Error converting telegram id from u64 to i64");
-        let res: PgQueryResult = sqlx::query!(
-            "update Users set balance_reais=$1 where telegram_id=$2;",
-            new_balance,
+        let res: f64 = sqlx::query_scalar!(
+            "update users set balance_reais=GREATEST(0.0, balance_reais-$1) where telegram_id=$2 returning users.balance_reais;",
+            value_to_discount_as_positive_number,
             telegram_id
         )
-        .execute(&self.con)
+        .fetch_one(&self.con)
         .await?;
-        assert_eq!(
-            res.rows_affected(),
-            1,
-            "Updating balance affected more than one row!"
-        );
-        Ok(())
+
+        Ok(res)
     }
 }

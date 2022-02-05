@@ -1,5 +1,6 @@
 use crate::dryer_manager::TickOutcome;
 use crate::telegram::{MsgType, OutgoingMessage};
+use chrono::Timelike;
 use flexi_logger::{Age, Logger};
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
@@ -28,9 +29,10 @@ fn seconds_to_hours_works() {
 #[tokio::main]
 async fn main() {
     dotenv::dotenv().ok();
-    Logger::try_with_str("info")
+    Logger::try_with_str("dringos=trace")
         .unwrap() // Write all error, warn, and info messages
-        .log_to_file(flexi_logger::FileSpec::default())
+        .format(flexi_logger::detailed_format)
+        .log_to_file(flexi_logger::FileSpec::default().directory("./logs"))
         .rotate(
             // If the program runs long enough,
             flexi_logger::Criterion::AgeOrSize(Age::Day, 10_000_000), // - create a new file every day or every 10 MB
@@ -48,9 +50,9 @@ async fn main() {
     let update_recv = telegram_recv.start_listening_for_updates_in_background_thread();
 
     loop {
-        match update_recv.recv_timeout(Duration::from_secs(10)) {
+        match update_recv.recv_timeout(Duration::from_secs_f32(0.5)) {
             Ok(user_message) => {
-                let response = match database.get_db_id(user_message.user_id).await {
+                let mut response = match database.get_db_id(user_message.user_id).await {
                     Ok(maybe_user) => match maybe_user {
                         None => {
                             OutgoingMessage {
@@ -74,8 +76,22 @@ async fn main() {
                         }
                     }
                 };
-                if let Err(e) = telegram_sender.try_send(response) {
-                    log::error!("{:#?}", e);
+                let now = chrono::Local::now();
+                response.text = format!(
+                    "{} - Dados atualizados em: {:0>2}:{:0>2}:{:0>2}",
+                    response.text,
+                    now.hour(),
+                    now.minute(),
+                    now.second()
+                );
+                let updating_msg_with_same_text = user_message.message_text
+                    == Some(response.text.clone())
+                    && response.update_message_with_id.is_some();
+                // ignore responses that would update a message with the same text as the original one
+                if !updating_msg_with_same_text {
+                    if let Err(e) = telegram_sender.try_send(response) {
+                        log::error!("{:#?}", e);
+                    }
                 }
             }
             Err(e) => {
@@ -98,8 +114,8 @@ async fn main() {
                     text: format!(
                         "Ciclo terminado por falta de saldo depois de {cycle_time}. Custo: R${cost_reais:.2} referentes a {kwh:.2} kwh consumidos. Saldo remanescente de {balance:.2}.",
                         cycle_time=seconds_to_hour_format(cycle_stats.start_time.elapsed().as_secs()),
-                        cost_reais=cycle_stats.total_consumed_reais,
-                        kwh=cycle_stats.total_consumed_kwh,
+                        cost_reais=cycle_stats.total_consumed_and_discounted_reais,
+                        kwh=cycle_stats.total_consumed_kwh(),
                         balance=cycle_stats.user.balance_reais,
                     ),
                     send_buttons: true,
@@ -115,8 +131,8 @@ async fn main() {
                     text: format!(
                         "Ciclo terminado depois de {cycle_time}. Custo: R${cost_reais:.2} referentes a {kwh:.2} kwh consumidos. Saldo remanescente de {balance:.2}.",
                         cycle_time=seconds_to_hour_format(cycle_stats.start_time.elapsed().as_secs()),
-                        cost_reais=cycle_stats.total_consumed_reais,
-                        kwh=cycle_stats.total_consumed_kwh,
+                        cost_reais=cycle_stats.total_consumed_and_discounted_reais,
+                        kwh=cycle_stats.total_consumed_kwh(),
                         balance=cycle_stats.user.balance_reais,
                     ),
                     send_buttons: true,
@@ -130,42 +146,20 @@ async fn main() {
                 delta_consumed_reais,
                 user,
             } => {
-                let fresh_db_user = database.get_db_id(user.telegram_id).await;
-
-                match fresh_db_user {
-                    Ok(fresh_db_user) => {
-                        let fresh_db_user =
-                            fresh_db_user.expect("DB user should exist if has cycle started");
-                        let new_dryer_balance_reais =
-                            fresh_db_user.balance_reais - delta_consumed_reais;
-                        let new_balance = new_dryer_balance_reais.max(0.);
-                        if let Err(e) = database
-                            .update_user_balance(user.telegram_id, new_balance)
-                            .await
-                        {
-                            dryer.emergency_turn_off();
-                            panic!("DB error updating user balance!{:#?}", e);
-                        }
+                match database
+                    .update_user_balance(user.telegram_id, delta_consumed_reais)
+                    .await
+                {
+                    Ok(new_balance) => {
                         dryer.set_user_balance_reais(new_balance);
                     }
                     Err(e) => {
-                        log::error!("{:#?}", e);
                         dryer.emergency_turn_off();
-                        let response = OutgoingMessage {
-                            update_message_with_id: None,
-                            chat_id: user.chat_id,
-                            text: format!(
-                                "Ciclo terminado a força por problema na rede interna da casa. Sem a rede interna não é possível atualizar o saldo durante o ciclo",
-                            ),
-                            send_buttons: true,
-                        };
-                        if let Err(e) = telegram_sender.try_send(response) {
-                            log::error!("{:#?}", e);
-                        }
+                        panic!("DB error updating user balance!{:#?}", e);
                     }
                 }
             }
-            TickOutcome::Off => {}
+            TickOutcome::Off | TickOutcome::NotEnoughConsumptionToDiscountYet => {}
         }
     }
 }

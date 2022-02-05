@@ -2,6 +2,8 @@ use log;
 use serialport::ClearBuffer;
 use std::fmt::Formatter;
 use std::io::{Error, ErrorKind, Read, Write};
+use std::time::Duration;
+
 pub struct Pzem {
     uart: Box<dyn serialport::SerialPort>,
 }
@@ -18,7 +20,7 @@ impl std::fmt::Debug for Pzem {
 pub struct Data {
     pub voltage: f32,
     pub current: f32,
-    pub power: f32,
+    pub power_w: f32,
     pub energy_wh: u32,
     pub frequency: f32,
     pub power_factor: f32,
@@ -32,15 +34,25 @@ impl Pzem {
         }
     }
 
-    pub fn reset_consumed_energy(&mut self) -> Result<(), Error> {
+    /// This is not reliable, it works most of the time, but sometimes just fails.. and retries
+    /// dont help, I think the whole pzem crashes
+    pub fn unreliable_reset_consumed_energy(&mut self) -> Result<(), Error> {
+        log::info!("Clearing buffers");
+        self.uart.clear(ClearBuffer::All)?;
         let mut request = [0x01, 0x42, 0x0, 0x0];
         Self::crc_write(request.as_mut_slice());
+        log::info!("Writing energy reset request");
         self.uart.write_all(&request)?;
+        log::info!("Flushing it");
         self.uart.flush()?;
         let mut response = [0; 4];
+        log::info!("Reading response");
         self.uart.read_exact(&mut response)?;
         if response[1] != 0x42 {
-            self.uart.clear(ClearBuffer::Input)?;
+            log::error!("Error, clearing all buffers");
+            // wait for buffer to fill
+            std::thread::sleep(Duration::from_millis(100));
+            self.uart.clear(ClearBuffer::All)?;
             return Err(std::io::Error::new(
                 ErrorKind::Other,
                 format!("Internal Pzem Error Code: {}", response[2]),
@@ -52,15 +64,19 @@ impl Pzem {
                 format!("Pzem returned an invalid CRC value"),
             ));
         }
+        log::info!("Reading energy data to make sure reset worked");
         if self.read_data()?.energy_wh != 0 {
             return Err(std::io::Error::new(
                 ErrorKind::Other,
                 format!("Pzem returned a non zero energy value after reset"),
             ));
         }
+        log::info!("Energy reset worked");
         Ok(())
     }
+
     pub fn read_data(&mut self) -> Result<Data, Error> {
+        self.uart.clear(ClearBuffer::All)?;
         // [Slave Address (0x01 ~ 0xF7), 0x04, Register Address High Byte, Register Address Low Byte, Number of Registers High Byte, Number of Registers Low Byte, CRC Check High Byte, CRC Check Low Byte]
         // Read Registers 0 to 11 from slave 1
         let mut request = [0x01, 0x04, 0x00, 0x00, 0x00, 0x0A, 0x0, 0x0];
@@ -104,7 +120,8 @@ impl Pzem {
             current: u32::from_be_bytes([response[4], response[5], response[2], response[3]])
                 as f32
                 / 1000.,
-            power: u32::from_be_bytes([response[8], response[9], response[6], response[7]]) as f32
+            power_w: u32::from_be_bytes([response[8], response[9], response[6], response[7]])
+                as f32
                 / 10.,
             energy_wh: u32::from_be_bytes([response[12], response[13], response[10], response[11]]),
             frequency: u16::from_be_bytes([response[14], response[15]]) as f32 / 10.,

@@ -2,7 +2,9 @@ use crate::dryer_machine::OffState;
 use crate::{MsgType, OutgoingMessage};
 
 const COST_REAIS_KWH: f64 = 1.1;
-const TURN_OFF_SECONDS_ZERO_POWER_THRESHOLD: u64 = 60;
+const TURN_OFF_SECONDS_ZERO_POWER_THRESHOLD: u64 = 20;
+const MIN_AMOUNT_REAIS_TURN_ON: f64 = 1.;
+const J_TO_WH_CONVERSION_FACTOR: f64 = 1. / 3600.;
 pub enum State {
     On(OnState),
     OffState(super::dryer_machine::OffState),
@@ -31,9 +33,17 @@ pub struct OnState {
 #[derive(Debug, Clone)]
 pub struct CycleStats {
     pub start_time: std::time::Instant,
-    pub total_consumed_kwh: f64,
-    pub total_consumed_reais: f64,
+    pub time_last_tick_update: std::time::Instant,
+    pub partial_undiscounted_accumulated_joules: f64,
+    total_consumed_and_discounted_wh: f64,
+    pub total_consumed_and_discounted_reais: f64,
     pub user: User,
+}
+
+impl CycleStats {
+    pub fn total_consumed_kwh(&self) -> f64 {
+        self.total_consumed_and_discounted_wh / 1000.
+    }
 }
 
 pub struct DryerManager {
@@ -48,6 +58,7 @@ pub enum TickOutcome {
         delta_consumed_reais: f64,
         user: User,
     },
+    NotEnoughConsumptionToDiscountYet,
     Off,
 }
 
@@ -60,15 +71,15 @@ impl DryerManager {
     pub fn emergency_turn_off(&mut self) {
         let state = self.state.take().expect("State should have been initiated");
         let new_state = match state {
-            State::On(on) => State::OffState(on.drier_on_state.turn_off_and_reset_energy_counter()),
+            State::On(on) => State::OffState(on.drier_on_state.turn_off()),
             State::OffState(off) => State::OffState(off),
         };
         self.state = Some(new_state);
     }
     fn process_on_state_tick(mut on: OnState) -> (State, TickOutcome) {
         // check if user is out of money
-        if on.cycle_stats.user.balance_reais <= 0.01 {
-            let off = on.drier_on_state.turn_off_and_reset_energy_counter();
+        if on.cycle_stats.user.balance_reais <= 0.001 {
+            let off = on.drier_on_state.turn_off();
             return (
                 State::OffState(off),
                 TickOutcome::TurnOffAndRemoveUserOutOfMoney(on.cycle_stats),
@@ -89,37 +100,41 @@ impl DryerManager {
                 // if we've been at "zero power" more time than the threshold, consider it
                 // as turned off
                 // turn off and remove user
-                let off = on.drier_on_state.turn_off_and_reset_energy_counter();
+                let off = on.drier_on_state.turn_off();
                 return (
                     State::OffState(off),
                     TickOutcome::TurnedOffDueToIdleTooLong(on.cycle_stats),
                 );
             }
         }
-        let consumed_wh = on.drier_on_state.get_consumed_energy_wh();
-        let total_consumed_kwh = consumed_wh as f64 / 1000.;
-        let total_consumed_reais = COST_REAIS_KWH * (total_consumed_kwh);
-        let delta_energy_kwh = total_consumed_kwh - on.cycle_stats.total_consumed_kwh;
-        let delta_consumed_reais = total_consumed_reais - on.cycle_stats.total_consumed_reais;
-        assert!(
-            delta_consumed_reais >= 0.,
-            "Can't have negative consumed money"
-        );
-        assert!(
-            delta_energy_kwh >= 0.,
-            "Can't have negative consumed energy"
-        );
-        on.cycle_stats.total_consumed_kwh = total_consumed_kwh;
-        on.cycle_stats.total_consumed_reais = total_consumed_reais;
-        let user = on.cycle_stats.user.clone();
-        (
-            State::On(on),
-            TickOutcome::DiscountConsumed {
-                delta_energy_kwh,
-                delta_consumed_reais,
-                user,
-            },
-        )
+        let current_power_w = on.drier_on_state.get_current_power() as f64;
+        let time_elapsed_s = on.cycle_stats.time_last_tick_update.elapsed().as_secs_f64();
+        let joules = current_power_w * time_elapsed_s;
+        on.cycle_stats.time_last_tick_update = std::time::Instant::now();
+        on.cycle_stats.partial_undiscounted_accumulated_joules += joules;
+        let partial_acc_joules = on.cycle_stats.partial_undiscounted_accumulated_joules;
+        let partial_consumed_wh = partial_acc_joules as f64 * J_TO_WH_CONVERSION_FACTOR;
+        let partial_consumed_kwh = partial_consumed_wh / 1000.;
+        let partial_consumed_reais = partial_consumed_kwh * COST_REAIS_KWH;
+        if partial_consumed_reais >= 0.01 {
+            on.cycle_stats.total_consumed_and_discounted_wh += partial_consumed_wh;
+            on.cycle_stats.total_consumed_and_discounted_reais += partial_consumed_reais;
+            on.cycle_stats.partial_undiscounted_accumulated_joules = 0.;
+            let user = on.cycle_stats.user.clone();
+            (
+                State::On(on),
+                TickOutcome::DiscountConsumed {
+                    delta_energy_kwh: partial_consumed_kwh,
+                    delta_consumed_reais: partial_consumed_reais,
+                    user,
+                },
+            )
+        } else {
+            (
+                State::On(on),
+                TickOutcome::NotEnoughConsumptionToDiscountYet,
+            )
+        }
     }
     pub fn set_user_balance_reais(&mut self, balance_reais: f64) {
         let current_state = self
@@ -144,33 +159,39 @@ impl DryerManager {
         self.state = Some(state);
         tick_outcome
     }
-    fn get_status_message(&self, telegram_id: u64) -> String {
+    fn get_status_message(&mut self, telegram_id: u64, user_balance: f64) -> String {
         let state = self
             .state
-            .as_ref()
+            .as_mut()
             .expect("State should have been initiated");
         return match state {
             State::On(on) => {
+                let power_now = on.drier_on_state.get_current_power();
                 if on.cycle_stats.user.telegram_id == telegram_id {
                     let cycle_stats = &on.cycle_stats;
                     format!(
-                        "Secando há {cycle_time}. Custo até o momento: R${cost_reais:.2} referentes a {kwh:.2} kwh consumidos. Saldo remanescente de {balance:.2}.",
+                        "Secando há {cycle_time}. Custo até o momento: R${cost_reais:.2} referentes a {kwh:.2} kwh consumidos. Saldo remanescente de {balance:.2}. Potencia atual: {power:.2}W",
                         cycle_time= crate::seconds_to_hour_format(cycle_stats.start_time.elapsed().as_secs()),
-                        cost_reais=cycle_stats.total_consumed_reais,
-                        kwh=cycle_stats.total_consumed_kwh,
+                        cost_reais=cycle_stats.total_consumed_and_discounted_reais,
+                        kwh=cycle_stats.total_consumed_kwh(),
                         balance=cycle_stats.user.balance_reais,
+                        power=power_now
                     )
                 } else {
                     format!(
-                        "{} está usando a secadora há: {}.",
+                        "{} está usando a secadora há: {}. O seu saldo remanescente é de: {balance:.2}.",
                         on.cycle_stats.user.name,
                         crate::seconds_to_hour_format(
                             on.cycle_stats.start_time.elapsed().as_secs()
-                        )
+                        ),
+                        balance=user_balance
                     )
                 }
             }
-            State::OffState(_) => "A secadora está livre!".to_string(),
+            State::OffState(_) => format!(
+                "A secadora está livre! Saldo remanescente: {balance:.2}.",
+                balance = user_balance
+            ),
         };
     }
 
@@ -179,14 +200,16 @@ impl DryerManager {
         user: super::telegram::UserMessage,
         db_user: super::database::User,
     ) -> OnState {
-        let on = off_state.turn_on_and_reset_energy_counter();
+        let on = off_state.turn_on();
         OnState {
             drier_on_state: on,
             start_time_zero_power: None,
             cycle_stats: CycleStats {
                 start_time: std::time::Instant::now(),
-                total_consumed_kwh: 0.0,
-                total_consumed_reais: 0.0,
+                time_last_tick_update: std::time::Instant::now(),
+                partial_undiscounted_accumulated_joules: 0.0,
+                total_consumed_and_discounted_wh: 0.0,
+                total_consumed_and_discounted_reais: 0.0,
                 user: User {
                     telegram_id: user.user_id,
                     chat_id: user.chat_id,
@@ -218,8 +241,8 @@ impl DryerManager {
                 }
             }
             State::OffState(off_state) => {
-                if db_user.balance_reais <= 2. {
-                    return (State::OffState(off_state), format!("Você precisa de ao menos 2 reais de saldo para ligar a secadora, você possui: R${:.2}.", db_user.balance_reais));
+                if db_user.balance_reais <= MIN_AMOUNT_REAIS_TURN_ON {
+                    return (State::OffState(off_state), format!("Você precisa de ao menos {} reais de saldo para ligar a secadora, você possui: R${:.2}.", MIN_AMOUNT_REAIS_TURN_ON, db_user.balance_reais));
                 } else {
                     let state = Self::turn_on_for_user(off_state, user, db_user.clone());
                     (
@@ -254,7 +277,7 @@ impl DryerManager {
             MsgType::GenericMsg => OutgoingMessage {
                 update_message_with_id: None,
                 chat_id: user_msg.chat_id,
-                text: self.get_status_message(user_msg.user_id),
+                text: self.get_status_message(user_msg.user_id, db_user.balance_reais),
                 send_buttons: true,
             },
             MsgType::TurnOn => OutgoingMessage {
@@ -266,7 +289,7 @@ impl DryerManager {
             MsgType::Update => OutgoingMessage {
                 update_message_with_id: user_msg.message_id,
                 chat_id: user_msg.chat_id,
-                text: self.get_status_message(user_msg.user_id),
+                text: self.get_status_message(user_msg.user_id, db_user.balance_reais),
                 send_buttons: true,
             },
         }

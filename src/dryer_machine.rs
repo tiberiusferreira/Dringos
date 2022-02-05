@@ -13,7 +13,7 @@ impl OffState {
     pub fn new() -> OffState {
         let usb_port = "/dev/ttyUSB0";
         let port = serialport::new(usb_port, 9600)
-            .timeout(Duration::from_millis(2000))
+            .timeout(Duration::from_millis(200))
             .open()
             .map_err(|e| {
                 std::io::Error::new(
@@ -27,12 +27,9 @@ impl OffState {
         switch.turn_off();
         Self { pzem, switch }
     }
-    pub fn turn_on_and_reset_energy_counter(mut self) -> OnState {
-        // if we failed to turn it on, try to turn it off again
+
+    pub fn turn_on(mut self) -> OnState {
         self.switch.turn_on();
-        self.pzem
-            .reset_consumed_energy()
-            .expect("Error resetting consumed energy!");
         OnState {
             pzem: self.pzem,
             switch: self.switch,
@@ -41,22 +38,12 @@ impl OffState {
 }
 
 impl OnState {
-    pub fn get_consumed_energy_wh(&mut self) -> u32 {
-        let data = self.pzem.read_data().expect("Error reading pzem data!");
-        data.energy_wh
-    }
     pub fn get_current_power(&mut self) -> f32 {
         let data = self.pzem.read_data().expect("Error reading pzem data!");
-        data.power
+        data.power_w
     }
-    pub fn reset_consumed_energy(&mut self) {
-        self.pzem
-            .reset_consumed_energy()
-            .expect("Error reseting pzem consumed energy!");
-    }
-    pub fn turn_off_and_reset_energy_counter(mut self) -> OffState {
+    pub fn turn_off(mut self) -> OffState {
         self.switch.turn_off();
-        self.reset_consumed_energy();
         OffState {
             pzem: self.pzem,
             switch: self.switch,

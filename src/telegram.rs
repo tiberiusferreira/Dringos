@@ -15,6 +15,7 @@ pub struct UserMessage {
     // Only some when it comes from a callback query and thus can be used to update
     // the message with new data
     pub message_id: Option<i32>,
+    pub message_text: Option<String>,
     pub user_id: u64,
     pub chat_id: i64,
     pub update: MsgType,
@@ -41,7 +42,8 @@ pub struct OutgoingMessage {
 
 impl Sender {
     pub fn new(token: String) -> Self {
-        let api = frankenstein::Api::new(&token);
+        let mut api = frankenstein::Api::new(&token);
+        api.with_timeout(Duration::from_secs(10));
         Self { api }
     }
     pub fn start_sender_background_thread(self) -> std::sync::mpsc::SyncSender<OutgoingMessage> {
@@ -170,7 +172,7 @@ impl Receiver {
         let update_params = frankenstein::GetUpdatesParams {
             offset: Some(self.id_last_update_handled),
             limit: None,
-            timeout: Some(10),
+            timeout: Some(5),
             allowed_updates: Some(vec!["message".to_string(), "callback_query".to_string()]), // None == all
         };
         let updates = self.api.get_updates(&update_params)?;
@@ -196,6 +198,7 @@ impl Receiver {
                         }
                         Some(from) => Some(UserMessage {
                             message_id: None,
+                            message_text: msg.text.clone(),
                             user_id: from.id,
                             chat_id: msg.chat.id,
                             update: MsgType::GenericMsg,
@@ -214,6 +217,7 @@ impl Receiver {
                         };
                         Some(UserMessage {
                             message_id: Some(msg.message_id),
+                            message_text: msg.text,
                             user_id: callback.from.id,
                             chat_id: msg.chat.id,
                             update,
